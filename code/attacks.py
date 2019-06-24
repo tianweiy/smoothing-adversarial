@@ -15,6 +15,158 @@ class Attacker(metaclass=ABCMeta):
         raise NotImplementedError
 
 
+class PGD_Linf(Attacker):
+    """
+        PGD attack
+
+        Parameters
+        ----------
+        steps : int
+            Number of steps for the optimization.
+        max_norm : float or None, optional
+            If specified, the norms of the perturbations will not be greater than this value which might lower success rate.
+        device : torch.device, optional
+            Device on which to perform the attack.
+
+        """
+
+    def __init__(self,
+                 steps: int = 10,
+                 random_start: bool = True,
+                 max_norm: Optional[float] = 8./255.,
+                 device: torch.device = torch.device('cpu')) -> None:
+        super(PGD_Linf, self).__init__()
+        self.steps = steps
+        self.random_start = random_start
+        self.max_norm = max_norm
+        self.device = device
+
+    def attack(self, model: nn.Module, inputs: torch.Tensor, labels: torch.Tensor,
+               noise: torch.Tensor = None, num_noise_vectors=1, targeted: bool = False) -> torch.Tensor:
+        if num_noise_vectors == 1:
+            return self._attack(model, inputs, labels, noise, targeted)
+        else:
+            return self._attack_mutlinoise(model, inputs, labels, noise, num_noise_vectors, targeted)
+
+    def _attack(self, model: nn.Module, inputs: torch.Tensor, labels: torch.Tensor,
+                noise: torch.Tensor = None, targeted: bool = False) -> torch.Tensor:
+        """
+        Performs the attack of the model for the inputs and labels.
+
+        Parameters
+        ----------
+        model : nn.Module
+            Model to attack.
+        inputs : torch.Tensor
+            Batch of samples to attack. Values should be in the [0, 1] range.
+        labels : torch.Tensor
+            Labels of the samples to attack if untargeted, else labels of targets.
+        targeted : bool, optional
+            Whether to perform a targeted attack or not.
+
+        Returns
+        -------
+        torch.Tensor
+            Batch of samples modified to be adversarial to the model.
+
+        """
+        if inputs.min() < 0 or inputs.max() > 1: raise ValueError('Input values should be in the [0, 1] range.')
+
+        batch_size = inputs.shape[0]
+        multiplier = 1 if targeted else -1
+        delta = torch.zeros_like(inputs, requires_grad=True)
+
+        # Setup optimizers
+        optimizer = optim.SGD([delta], lr=self.max_norm / 4)
+
+        for i in range(self.steps):
+            adv = inputs + delta
+            if noise is not None:
+                adv = adv + noise
+            logits = model(adv)
+            pred_labels = logits.argmax(1)
+            ce_loss = F.cross_entropy(logits, labels, reduction='sum')
+            loss = multiplier * ce_loss
+
+            optimizer.zero_grad()
+            loss.backward()
+            delta.grad = delta.grad.data.sign()
+
+            optimizer.step()
+
+            # make valid images
+            delta.data.add_(inputs)
+            delta.data.clamp_(0, 1).sub_(inputs)
+
+            # clamp into norm ball
+            delta.data.clamp_(-self.max_norm, self.max_norm)
+        return inputs + delta
+
+    def _attack_mutlinoise(self, model: nn.Module, inputs: torch.Tensor, labels: torch.Tensor,
+                           noise: torch.Tensor = None, num_noise_vectors: int = 1,
+                           targeted: bool = False) -> torch.Tensor:
+        """
+        Performs the attack of the model for the inputs and labels.
+
+        Parameters
+        ----------
+        model : nn.Module
+            Model to attack.
+        inputs : torch.Tensor
+            Batch of samples to attack. Values should be in the [0, 1] range.
+        labels : torch.Tensor
+            Labels of the samples to attack if untargeted, else labels of targets.
+        targeted : bool, optional
+            Whether to perform a targeted attack or not.
+
+        Returns
+        -------
+        torch.Tensor
+            Batch of samples modified to be adversarial to the model.
+
+        """
+        if inputs.min() < 0 or inputs.max() > 1: raise ValueError('Input values should be in the [0, 1] range.')
+        batch_size = labels.shape[0]
+        multiplier = 1 if targeted else -1
+        delta = torch.zeros((len(labels), *inputs.shape[1:]), requires_grad=True, device=self.device)
+
+        # Setup optimizers
+        optimizer = optim.SGD([delta], lr=self.max_norm / self.steps * 2)
+
+        for i in range(self.steps):
+
+            adv = inputs + delta.repeat(1, num_noise_vectors, 1, 1).view_as(inputs)
+            if noise is not None:
+                adv = adv + noise
+            logits = model(adv)
+
+            pred_labels = logits.argmax(1).reshape(-1, num_noise_vectors).mode(1)[0]
+            # safe softamx
+            softmax = F.softmax(logits, dim=1)
+            # average the probabilities across noise
+            average_softmax = softmax.reshape(-1, num_noise_vectors, logits.shape[-1]).mean(1, keepdim=True).squeeze(1)
+            logsoftmax = torch.log(average_softmax.clamp(min=1e-20))
+            ce_loss = F.nll_loss(logsoftmax, labels)
+
+            loss = multiplier * ce_loss
+
+            optimizer.zero_grad()
+            loss.backward()
+            # renorming gradient
+            delta.grad = delta.grad.data.sign()
+
+            optimizer.step()
+
+            delta.data.add_(inputs[::num_noise_vectors])
+            delta.data.clamp_(0, 1).sub_(inputs[::num_noise_vectors])
+
+            # clamp into norm ball
+            delta.data.clamp_(-self.max_norm, self.max_norm)
+
+        return inputs + delta.repeat(1, num_noise_vectors, 1, 1).view_as(inputs)
+
+
+
 # Modification of the code from https://github.com/jeromerony/fast_adversarial
 class PGD_L2(Attacker):
     """
@@ -504,4 +656,6 @@ class DDN(Attacker):
             if self.quantize:
                 best_delta.mul_(self.levels - 1).round_().div_(self.levels - 1)
         return inputs + best_delta.repeat(1,num_noise_vectors,1,1).view_as(inputs)
+
+
 
