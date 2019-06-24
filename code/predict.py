@@ -7,7 +7,7 @@ import os
 from time import time
 
 from architectures import get_architecture
-from attacks import Attacker, PGD_L2, DDN 
+from attacks import Attacker, PGD_L2, DDN, PGD_Linf
 from core import Smooth
 from datasets import get_dataset, DATASETS, get_num_classes
 import setGPU
@@ -97,7 +97,7 @@ if __name__ == "__main__":
 
     if args.attack == 'PGD':
         print('Attacker is PGD')
-        attacker = PGD_L2(steps=args.num_steps, device='cuda', max_norm=args.epsilon)
+        attacker = PGD_Linf(steps=args.num_steps, device='cuda', max_norm=args.epsilon)
         # attacker = PGD(num_steps=args.num_steps, norm='l2', step_size=args.epsilon/args.num_steps*2, epsilon=args.epsilon)
     elif args.attack == 'DDN':
         print('Attacker is DDN')
