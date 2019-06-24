@@ -81,10 +81,12 @@ if __name__ == "__main__":
         args.gamma_DDN = 1 - (3/510/args.epsilon)**(1/args.num_steps)
 
     # load the base classifier
-    checkpoint = torch.load(args.base_classifier)
-    base_classifier = get_architecture(checkpoint["arch"], args.dataset)
-    base_classifier.load_state_dict(checkpoint['state_dict'])
+    # checkpoint = torch.load(args.base_classifier)
+    # base_classifier = get_architecture(checkpoint["arch"], args.dataset)
+    # base_classifier.load_state_dict(checkpoint['state_dict'])
+    base_classifier = torch.hub.load('pytorch/vision', 'resnet50', pretrained=True)
     base_classifier.eval()
+
     requires_grad_(base_classifier, False)
     
     # create the smoothed classifier g
